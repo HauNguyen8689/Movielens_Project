@@ -1,0 +1,671 @@
+---
+title: "Movielens Project"
+output:
+  bookdown::pdf_document2: 
+    extra_dependencies: "subfig"
+header-includes:
+  \usepackage{placeins}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+#clear environment
+rm(list = ls())
+#Load library and install package if needed
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if (!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if (!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if (!require(knitr)) install.packages("knitr")
+if (!require(kableExtra)) install.packages("kableExtra")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 3.6 or earlier:
+#movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],title = as.character(title),genres = as.character(genres))
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+# Extract "year" from "title" in edx and validation set
+pattern <- "\\((\\d{4})\\)$"
+edx <- edx %>% mutate(year=str_extract_all(edx$title, pattern,simplify=FALSE))
+edx <- edx %>% mutate(title=str_remove_all(edx$title,pattern))
+
+validation <- validation %>% mutate(year=str_extract_all(validation$title, pattern,simplify=FALSE))
+validation <- validation %>% mutate(title=str_remove_all(validation$title,pattern))
+
+validation$year <- str_remove_all(validation$year,"[(]")
+validation$year <- str_remove_all(validation$year,"[)]")
+
+edx$year <- str_remove_all(edx$year,"[(]")
+edx$year <- str_remove_all(edx$year,"[)]")
+
+# Change class of Year from character to numeric
+validation$year <- as.numeric(validation$year)
+edx$year <- as.numeric(edx$year)
+```
+\newpage
+
+# Introduction
+
+In this project, I use Movielens data set to build a recommendation system based on movies' rating. All popular movie websites or streaming services like Netflix or Reddit apply recommendation systems to suggest viewers which movies they should choose. There are some methods to construct movie recommendation systems, for example content-based recommendation system, user-based collaborative filtering system, etc. In my project, the recommendation system is built based on movies' rating because we expect that users with similar taste will tend to rate movies with high correlation. Therefore, the main objective is construct a model to predict user movie ratings based on other users’ ratings. 
+
+The structure of the report is as follows: Section 1 introduces the analytic problem, Section 2 presents data preparation, data exploration and visualization are included in Section 3, Section 4 discusses methodologies and results, finally a conclusion with limitations and further analysis is presented in Section 5.
+
+# Data preparation
+
+## Data description
+
+MovieLens data sets are used to build rating prediction model in this project, they were collected by the GroupLens Research Project at the University of Minnesota over various periods of time, depending on the size of the set. I use the 10M version of the MovieLens data set for this project and create a data set with 7 variables, including userId, movieId, rating, timestamp, title, genres and year (I separate "year" variable to represent for "released year of the movie" from "genres" variable). I start by explore the overall of the data set. The summary of this data set is presented in Table \@ref(tab:tab1) and Table \@ref(tab:tab2).
+
+```{r tab1, echo = FALSE}
+#2. Data Preparation
+#2.1. Data Description
+# Summary of character variables
+Character_variables <- c("title","genres")
+Number_of_categories <- c(n_distinct(edx$title), n_distinct(edx$genres))
+tab1 <- data.frame(Character_variables,Number_of_categories)
+kbl(tab1, booktabs = T, caption = "Summary of character variables") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+```{r tab2, echo = FALSE}
+# Summary of numeric variables
+Numeric_variables <- c("userId","movieId","rating","timestamp","year")
+Min <- c(min(edx$userId),min(edx$movieId),min(edx$rating),
+         min(edx$timestamp),min(edx$year))
+Median <- c(median(edx$userId),median(edx$movieId),median(edx$rating),
+            median(edx$timestamp),median(edx$year))
+Mean <- c(mean(edx$userId),mean(edx$movieId),mean(edx$rating),
+          mean(edx$timestamp),mean(edx$year))
+Max <- c(max(edx$userId),max(edx$movieId),max(edx$rating),
+         max(edx$timestamp),max(edx$year))
+NA_number <- c(sum(is.na(edx$userId)),sum(is.na(edx$movieId)),
+                  sum(is.na(edx$rating)),sum(is.na(edx$timestamp)),
+                  sum(is.na(edx$year)))
+tab2 <- data.frame(Numeric_variables,Min,Median,Mean,Max,NA_number)
+kbl(tab2, booktabs = T,digits = 1,caption = "Summary of numeric variables") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+#N/A values: No
+```
+From the summary of the data set, we see that there are 7 variables, including 2 character and 5 numeric ones. Because the objective is building a model to predict rating, the response variable here is "rating" and predictors are remaining variables. Specifically, the response variable "rating" has a range from 0.5 to 5, with mean value is around 3.5. Moreover, there is no N/A value in the data set, thus I do not need to deal with missing data.
+\FloatBarrier
+
+## Data cleaning
+
+In this section, we investigate each variable and check if there is any outlier in the data set. Because 5 variables, including userId, movieId, timestamp, title and genres are actually factor values, I explore the boxplots of rating and year only in Figure \@ref(fig:fig1).
+
+```{r fig1, echo = FALSE, fig.cap="Boxplots of rating and year", fig.show="hold", out.width="50%"}
+#2.2 Data Cleaning
+boxplot(edx$rating, xlab="Rating", col="blue")
+boxplot(edx$year, xlab="Year", col="blue")
+#it seems to be there is no outliers
+```
+Figure \@ref(fig:fig1) shows that it seems to be no outlier in rating and year variables, just only some points are far from the center but still in the value range of each variable. 
+\FloatBarrier
+
+# Data exploration and visualization
+
+## Rating count exploration
+```{r, include = FALSE}
+#3.1. Number of rating count
+#How many different movies
+n_distinct(edx$movieId)
+
+#Range of number of rating count per movie
+rating_count <- edx %>% select(movieId,rating) %>%
+  group_by(movieId) %>% summarize(rating_count = n())
+range(rating_count)
+```
+
+In the upcoming sections, I explore more details in the data set and also visualize if possible. There are 10,677 different movies in this data set, with the rating count ranges from 1 to 65,133, which means that there is a significant difference in rating count among movies. To understand more about the difference in rating count, I visualize by plotting the histogram of number of rating count in Figure \@ref(fig:fig2).
+
+Please note that because the tail of histogram with movies having more than 3000 rating counts will be hardly to see, I just plot histogram for movies having less than 3000 rating counts only.
+
+```{r fig2, echo= FALSE, fig.cap="Histogram of rating count", fig.align = "center", out.width="80%"}
+# Histogram of number of rating count
+rating_count %>%
+  ggplot(aes(x=rating_count)) +
+  geom_histogram(fill="blue",binwidth = 50) +
+  scale_x_continuous(breaks=seq(0, 3000, by=500)) +
+  coord_cartesian(x=c(0, 3000)) +
+  labs(x="number of rating count", y="number of movies")
+```
+The distribution of rating count is right skewed because the right tail (larger values) of histogram is much longer than the left tail (smaller values), which means that most values have small number of rating count.
+
+Next I discover the top 10 movies with highest number of rating count. The top 10 list is shown in Figure \@ref(fig:fig3).
+
+```{r fig3, echo= FALSE, fig.cap="Top 10 movies with highest rating count", fig.align = "center", out.width="80%"}
+# Top movies with highest number of rating count
+top_10_rating <- edx %>% select(movieId,title) %>%
+  group_by(title) %>% summarize(rating_count = n()) %>%
+  top_n(10,rating_count)
+ggplot(top_10_rating, aes(x=reorder(title, rating_count), y=rating_count)) +
+  geom_bar(stat='identity', fill="blue") + 
+  coord_flip() +
+  labs(x="", y="Number of rating count") +
+  geom_text(aes(label=round(rating_count, digits = 0)), 
+            hjust=1.2, size=3, col="white") +
+  theme(plot.title = element_text(size = 12))
+```
+Figure \@ref(fig:fig3) makes sense since we can see most familiar movie names here. However, there is a big difference in number of rating count among the top 10 highest rating movies.
+\FloatBarrier
+
+## Average rating exploration
+
+Analysis of average rating is presented in this section. To begin with, I visualize the average rating by plotting a histogram in Figure \@ref(fig:fig4).
+
+```{r fig4, echo= FALSE, fig.cap="Histogram of average rating", fig.align = "center",out.width="80%"}
+# Histogram of average rating
+average_rating <- edx %>% select(movieId,rating) %>%
+  group_by(movieId) %>% summarize(average_rating = mean(rating))
+average_rating %>%
+  ggplot(aes(x=average_rating)) +
+  geom_histogram(fill="blue",binwidth=0.2) +
+  labs(x="Average rating", y="number of movies")
+```
+We can see from Figure \@ref(fig:fig4) that the distribution of average rating is left skewed, with the mode value around 3.5. However, not many movies reach the highest rating at 5. In Table \@ref(tab:tab3), we discover the top 10 movies with highest average rating. We can see from Table \@ref(tab:tab3) that although these movies rated with highest points, actually they are not popular movies with few viewers only. Hence, they are not representative for the data set.
+
+```{r tab3, echo= FALSE}
+# Top movies with highest average rating 
+top_10_average_rating <- edx %>% select(rating,title) %>%
+  group_by(title) %>% 
+  summarize(rating_count = n(), average_rating = mean(rating)) %>%
+  top_n(10,average_rating) %>%
+  arrange(desc(average_rating))
+kbl(top_10_average_rating, booktabs = T, 
+    caption="The top 10 movies with highest average rating") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+\FloatBarrier
+
+## Genres exploration
+
+In this section, I explore movies by genres. Because there is a combination of different genres in the genres variable, so I separate this variable into each genre and discover it. After breaking down genres variable into separate genres, there are 20 different genre names. The number of movies in each genre are presented in Figure \@ref(fig:fig5).
+
+```{r, include= FALSE}
+#3.3. Genres
+# Number of movies by genre
+#separate genres and number of movies by genre
+index <- createDataPartition(y=edx$rating, times=1,p=0.1, list=FALSE)
+edx1 <- edx[index,]
+edx1$genres <- str_split(edx1$genres, pattern="\\|")
+separate_genres <- enframe(edx1$genres) %>%
+  unnest(value) %>%
+  mutate(temp = 1) %>%
+  pivot_wider(names_from = value, values_from = temp, values_fill = list(temp = 0))
+edx1 <- cbind(edx1, separate_genres) %>% select(-name)
+not_genres <- c("userId", "movieId", "rating", "title", "year","timestamp","genres")
+genres_name <- colnames(edx1)[!colnames(edx1) %in% not_genres]
+#names of each genre
+genres_name
+```
+
+```{r fig5, echo= FALSE, fig.cap="Total number of movie by genre", fig.align = "center", out.width="80%"}
+genres_number <- sapply(genres_name, function(g) {
+  sum(str_detect(edx$genres, g))
+})
+genres_each <- data.frame(genres_name,genres_number)
+ggplot(genres_each, aes(x=reorder(genres_name,genres_number), y=genres_number)) +
+  geom_bar(stat = "identity", fill = "blue") + 
+  coord_flip() + 
+  xlab("") +
+  ylab("Number of each genre")
+```
+It can be seen from Figure \@ref(fig:fig5) that drama movies are the most popular type, followed by comedy and action types. On the other hand, much less viewer choose IMAX and documentary movies than other types.
+
+```{r, include = FALSE}
+#number of combination of genres
+n_distinct(edx$genres)
+```
+However in the data set, each movie is usually is a combination of different genres,thus I explore more details of rating count and average rating by the combination of genres. Although there are only 20 separate genre, it can generate 797 combination of genres in the data set. Table \@ref(tab:tab4) shows the highest rating count and we can see that drama and comedy types have the higher number of rating count than other kinds of movies.
+
+```{r tab4, echo= FALSE}
+#top highest rating count by combination of genres
+top_10_genres <- edx %>% select(movieId,genres) %>%
+  group_by(genres) %>% summarize(genres_count = n()) %>% 
+  top_n(10,genres_count) %>% arrange(desc(genres_count))  
+kbl(top_10_genres, booktabs = T, 
+    caption="The top 10 highest rating count by combination of genres") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+Figure \@ref(fig:fig6) presents the top 10 highest average rating by combination of genres. Although drama movies has the highest number of rating count, they do not have the highest average rating. Movies with combination of Animation|IMAX|Sci-Fi genres have highest average rating at 4.7 point.
+
+```{r fig6, echo= FALSE, fig.cap="Top highest average rating by combination of genres", fig.align = "center", out.width="70%"}
+# Top highest average rating by combination of genres
+top_genre_average_rating <- edx %>% select(rating,genres) %>%
+  group_by(genres) %>% summarize(average_rating = mean(rating)) %>% 
+  top_n(10,average_rating) %>% arrange(desc(average_rating))  
+ggplot(top_genre_average_rating, aes(x=reorder(genres, average_rating), y=average_rating)) +
+  geom_bar(stat='identity', fill="blue") + 
+  coord_flip() +
+  labs(x="", y="Average rating") +
+  geom_text(aes(label=round(average_rating, digits = 1)), 
+            hjust=1.2, size=3, col="white") +
+  theme(plot.title = element_text(size = 11))
+```
+\FloatBarrier
+
+## Released year exploration
+
+As mentioned in the Introduction part, I separated released year from genres variable into "year" variable. In this section, I go into deep understanding of this data set by year. Figure \@ref(fig:fig7) shows the number of movies released in each year.
+
+```{r fig7, echo= FALSE, fig.cap="Number of movies each year", fig.align = "center", out.width="80%"}
+# Number of movies by year
+#number of movies each year
+movie_year <- edx %>% select(year,movieId) %>% group_by(year) %>% 
+  summarise(count=n()) %>% arrange(year)
+#plot year and number of movies
+movie_year %>% ggplot(aes(year,count)) + geom_line(color="red")
+```
+
+It can be seen from Figure \@ref(fig:fig7) that the number of movies increases gradually from 1915 to 1990, but soars significantly from 1990 to 1995 and peaks at 1995. After that, the number drops from 1995 to 2008.
+
+```{r tab5, echo= FALSE}
+# Top highest number of movies by year
+movie_year_10 <- edx %>% select(year,movieId,rating) %>%
+  group_by(year) %>% summarize(count = n(), average_rating = mean(rating)) %>% 
+  top_n(10,count) %>% arrange(desc(count))  
+kbl(movie_year_10, booktabs = T,
+    caption ="The top 10 highest number of movies by year") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+Table \@ref(tab:tab5) shows more details about the top 10 years with highest number of movies, their average ratings are around 3.4.  Both Figure \@ref(fig:fig7) and Table \@ref(tab:tab5) indicate that the highest number of movies released in 1995, followed by 1994 and 1996.
+
+In the last section in Part 3, I explore the top 10 years with highest average rating. It is a little bit surprise here as we can see from Table \@ref(tab:tab6) that the years with the highest average rating are quite long time ago and there are not many viewers in those years.
+
+```{r tab6, echo= FALSE}
+# Top 10 year with highest average rating
+# average rating each year and top 10 years with highest average rating
+year_average_rating <- edx %>% select(rating,year) %>% group_by(year) %>% 
+  summarise(average_rating=mean(rating), view_count = n()) %>% 
+  top_n(10,average_rating) %>% arrange(desc(average_rating)) 
+kbl(year_average_rating, booktabs = T,
+    caption="The top 10 years with highest average rating") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+\FloatBarrier
+
+# Methodology
+
+## Method to predict rating
+
+In this analysis, I build a regression model to predict rating based on predictors in the data set. Moreover, as we can see from Section 3, there are some highest or lowest points in rating data but not representative for all data set, thus I also apply regularization method to produce better prediction. Some different models are considered and the optimal one is chosen based on the result of Root Mean Squared Error (RMSE). The equation of RMSE is as follows:
+
+\begin{equation}
+RMSE = \sqrt{1/N * \sum_{u,i}(\hat{y}_{u,i} - y_{u,i})^2} (\#eq:eq1)
+\end{equation}
+
+where $y_{u,i}$ is the rating for movie $i$ by user $u$, $\hat{y}_{u,i}$ is the predicted value of $y_{u,i}$ and N is the number of user/movie combinations and the sum occurring over all these combinations.
+
+Firstly, I estimate rating by the model with no predictor, which means the same rating for all movies. The function is like that:
+
+\begin{equation}
+\hat{y}_{u,i} = \mu + \epsilon_{u,i} (\#eq:eq2)
+\end{equation}
+
+with $\epsilon_{u,i}$ is independent errors sampled from the same distribution centered at 0 and $\mu$ is the mean rating of all movies.
+
+**Model 1**
+
+As we can see from Section 3 that there is a big difference of rating across genres. In other words, movies with different genres are rated differently. Hence, I add the term $b_g$ to represent for genres effect into Equation \@ref(eq:eq2).
+
+\begin{equation}
+\hat{y}_{u,i} = \mu + b_g + \epsilon_{u,i} (\#eq:eq3)
+\end{equation}
+
+The idea of regularization is to constrain the total variability of the effect sizes, so instead of minimizing RMSE in Equation \@ref(eq:eq1), we minimize an equation that adds a penalty in Equation \@ref(eq:eq4).
+
+\begin{equation}
+1/N \sum_{u,i}(y_{u,i} - \mu - b_g)^2 + \lambda\sum_g b_g^2 (\#eq:eq4)
+\end{equation}
+
+It can be seen as penalized least squares, including least squares and penalty that gets larger when many $b_g$ are large. The values of $b_g$ that minimize Equation \@ref(eq:eq4) are shown in Equation \@ref(eq:eq5).
+
+\begin{equation}
+\hat{b_g}(\lambda) = 1/(\lambda + n_g) \sum_{i=1}^{n_g} (Y_{u,i} - \hat{\mu}) (\#eq:eq5)
+\end{equation}
+
+where $n_g$ is the number of ratings made for genre $g$. 
+
+**Model 2**
+
+Section 3 also shows that rating of movies different across years. Therefore, to account for year effect, I add the term $b_y$ to represent for year effect into Equation \@ref(eq:eq3).
+
+\begin{equation}
+\hat{y}_{u,i} = \mu + b_g + b_y + \epsilon_{u,i} (\#eq:eq6)
+\end{equation}
+
+The equation of penalized least squares is:
+
+\begin{equation}
+1/N \sum_{u,i}(y_{u,i} - \mu - b_g - b_y)^2 + \lambda(\sum_gb_g^2 + \sum_yb_y^2) (\#eq:eq7)
+\end{equation}
+
+The values of $b_y$ that minimize Equation \@ref(eq:eq7) can be approximated by:
+
+\begin{equation}
+\hat{b_y}(\lambda) = 1/(\lambda + n_y) \sum_{i=1}^{n_y} (Y_{u,i} - \hat{\mu} - \hat{b_g}(\lambda)) (\#eq:eq8)
+\end{equation}
+
+where $n_y$ is the number of ratings made for year $y$. 
+
+**Model 3**
+
+The rating of movies is also affected by the movie itself, thus I add movie effect inside model, the equation is as below:
+
+\begin{equation}
+\hat{y}_{u,i} = \mu + b_g + b_y + b_i + \epsilon_{u,i} (\#eq:eq9)
+\end{equation}
+
+The equation of penalized least squares is:
+
+\begin{equation}
+1/N \sum_{u,i}(y_{u,i} - \mu - b_g - b_y - b_i)^2 + \lambda(\sum_gb_g^2 + \sum_yb_y^2 + \sum_ib_i^2) (\#eq:eq10)
+\end{equation}
+
+The values of $b_i$ that minimize Equation \@ref(eq:eq10) can be approximated by:
+
+\begin{equation}
+\hat{b}_i(\lambda) = 1/(\lambda + n_i) \sum_{i=1}^{n_i} (Y_{u,i} - \hat{\mu} - \hat{b_g}(\lambda) - \hat{b_y}(\lambda)) (\#eq:eq11)
+\end{equation}
+
+where $n_i$ is the number of ratings made for movie $i$. 
+
+**Model 4**
+
+Finally, different viewers usually rate the same movies with different point. Hence, I include user effect in prediction model, the equation is as below:
+
+\begin{equation}
+\hat{y}_{u,i} = \mu + b_g + b_y + b_i + b_u + \epsilon_{u,i} (\#eq:eq12)
+\end{equation}
+
+The equation of penalized least squares is:
+
+\begin{equation}
+1/N \sum_{u,i}(y_{u,i} - \mu - b_g - b_y - b_i - b_u)^2 + \lambda(\sum_gb_g^2 + \sum_yb_y^2 + \sum_ib_i^2 + \sum_ub_u^2) (\#eq:eq13)
+\end{equation}
+
+The values of $b_u$ that minimize Equation \@ref(eq:eq13) can be approximated by:
+
+\begin{equation}
+\hat{b}_u(\lambda) = 1/(\lambda + n_u) \sum_{i=1}^{n_u} (Y_{u,i} - \hat{\mu} - \hat{b_g}(\lambda) - \hat{b_y}(\lambda) - \hat{b_i}(\lambda)) (\#eq:eq14)
+\end{equation}
+
+where $n_u$ is the number of ratings made by user $u$. 
+
+I split edx data set into two set for training and testing (with 90% and 10% of edx set respectively) then use train set to train each model and test set to calculate RMSE of each model. Furthermore, because $\lambda$ is a tuning parameter, I use cross validation to choose the optimal value of $lambda$ with its range from 0 to 10. Based on that, I choose the optimal model with smallest RMSE and use this chosen model to retrain on the whole edx set to find the final RMSE on validation set.
+ 
+## Selecting the optimal model
+
+As mentioned in the previous part, I run regress model with regularization method on on the training set and use the test set to compare RMSE results, then choose the optimal model based on that. The final result is presented in Table \@ref(tab:tab7).
+```{r, include = FALSE}
+# 4.2. Selecting The Best Model
+# Calculate RMSE
+test_index <- createDataPartition(y=edx$rating, times=1,p=0.1, list=FALSE)
+train_set <- edx[-test_index,]
+temp <- edx[test_index,]
+
+# Make sure movieId, userId in test_set are also in train_set
+test_set <- temp %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId") 
+
+# Add rows removed from test set back into train set
+removed <- anti_join(temp, test_set)
+train_set <- rbind(train_set, removed)
+
+# Model 1: rating ~ as.factor(genres)
+lambda <- seq(0,10,1)
+
+rmse1 <- sapply(lambda,function(l){
+  
+  mu <- mean(train_set$rating) 
+  
+  b_g <- train_set %>% 
+    group_by(genres) %>% 
+    summarize(b_g = sum(rating - mu)/(n()+l))
+  
+  y_hat <- test_set %>% 
+    left_join(b_g, by='genres') %>%
+    mutate(y_hat = mu + b_g) %>%
+    pull(y_hat)
+  
+  sqrt(mean((y_hat - test_set$rating)^2))
+})
+
+result1 <- data_frame(Method = "Genre effect model",
+                      Optimal_lambda = lambda[which.min(rmse1)],
+                      RMSE = min(rmse1))
+
+# Model 2: rating ~ as.factor(genres) + year
+
+rmse2 <- sapply(lambda,function(l){
+  
+  mu <- mean(train_set$rating) 
+  
+  b_g <- train_set %>% 
+    group_by(genres) %>% 
+    summarize(b_g = sum(rating - mu)/(n()+l))
+  
+  b_y <- train_set %>% 
+    left_join(b_g, by='genres') %>%
+    group_by(year) %>%
+    summarize(b_y = sum(rating - mu - b_g)/(n()+l))
+  
+  y_hat <- test_set %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    mutate(y_hat = mu + b_g + b_y) %>%
+    pull(y_hat)
+  
+  sqrt(mean((y_hat - test_set$rating)^2))
+})
+
+result2 <- data_frame(Method = "Genre + year effect model",
+                      Optimal_lambda = lambda[which.min(rmse2)],
+                      RMSE = min(rmse2))
+
+# Model 3: rating ~ as.factor(genres) + year + movieId
+
+rmse3 <- sapply(lambda,function(l){
+  
+  mu <- mean(train_set$rating) 
+  
+  b_g <- train_set %>% 
+    group_by(genres) %>% 
+    summarize(b_g = sum(rating - mu)/(n()+l))
+  
+  b_y <- train_set %>% 
+    left_join(b_g, by='genres') %>%
+    group_by(year) %>%
+    summarize(b_y = sum(rating - mu - b_g)/(n()+l))
+  
+  b_i <- train_set %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu - b_g - b_y)/(n()+l))
+  
+  y_hat <- test_set %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    left_join(b_i, by='movieId') %>%
+    mutate(y_hat = mu + b_g + b_y + b_i) %>%
+    pull(y_hat)
+  
+  sqrt(mean((y_hat - test_set$rating)^2))
+})
+
+result3 <- data_frame(Method = "Genre + year + movieId effect model",
+                      Optimal_lambda = lambda[which.min(rmse3)],
+                      RMSE = min(rmse3))
+
+# Model 4: rating ~ as.factor(genres) + year + movieId + userId
+
+rmse4 <- sapply(lambda,function(l){
+  
+  mu <- mean(train_set$rating) 
+  
+  b_g <- train_set %>% 
+    group_by(genres) %>% 
+    summarize(b_g = sum(rating - mu)/(n()+l))
+  
+  b_y <- train_set %>% 
+    left_join(b_g, by='genres') %>%
+    group_by(year) %>%
+    summarize(b_y = sum(rating - mu - b_g)/(n()+l))
+  
+  b_i <- train_set %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu - b_g - b_y)/(n()+l))
+  
+  b_u <- train_set %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    left_join(b_i, by='movieId') %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - mu - b_g - b_y - b_i)/(n()+l))
+  
+  y_hat <- test_set %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    mutate(y_hat = mu + b_g + b_y + b_i + b_u) %>%
+    pull(y_hat)
+  
+  sqrt(mean((y_hat - test_set$rating)^2))
+})
+
+result4 <- data_frame(Method = "Genre + year + movieId + userId effect model",
+                      Optimal_lambda = lambda[which.min(rmse4)],
+                      RMSE = min(rmse4))
+
+```
+
+```{r tab7, echo= FALSE}
+#Combine all results
+# Combined result table
+result <- bind_rows(result1,result2,result3,result4)
+kbl(result, booktabs = T, caption ="Combined result of all models") %>% 
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+Table \@ref(tab:tab7) shows that the model with only genre effect produces quite high RMSE and RMSE reduces just a little bit by adding year effect into model. It then drops significantly when including 2 more movieId and userId variables, gives much better results. Therefore, I choose the optimal model including all 4 effects: genres, year, movieId and userId. 
+
+Figure \@ref(fig:fig8) presents different values of lambda and respectively RMSE of Model 4 with all 4 effects. Because Model 4 is chosen, I will set value of lambda equal 5 as the optimal lambda to calculate RMSE on the validation set.
+
+```{r fig8, echo = FALSE, fig.cap="Value of lambda and RMSE of Model 4", fig.align="center", out.width="80%"}
+# Plot lambda and rmse of of Model 4
+plot(lambda,rmse4)
+```
+
+## Final result on validation set
+
+I retrain the chosen model with value of optimal lambda equal 5 on whole edx set, then use the validation set to get the final quality of model (RMSE) in this section. The result is shown in Table \@ref(tab:tab8).
+
+```{r, include = FALSE}
+# 4.3. Final Result on Validation Set
+# Retrain optimal model on edx data set, then calculate RMSE on validation set
+# Set lambda = 5
+l <- 5
+
+mu <- mean(edx$rating) 
+  
+b_g <- edx %>% 
+    group_by(genres) %>% 
+    summarize(b_g = sum(rating - mu)/(n()+l))
+  
+b_y <- edx %>% 
+    left_join(b_g, by='genres') %>%
+    group_by(year) %>%
+    summarize(b_y = sum(rating - mu - b_g)/(n()+l))
+  
+b_i <- edx %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu - b_g - b_y)/(n()+l))
+  
+b_u <- edx %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    left_join(b_i, by='movieId') %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - mu - b_g - b_y - b_i)/(n()+l))
+  
+y_hat <- validation %>% 
+    left_join(b_g, by='genres') %>%
+    left_join(b_y, by='year') %>%
+    left_join(b_i, by='movieId') %>%
+    left_join(b_u, by='userId') %>%
+    mutate(y_hat = mu + b_g + b_y + b_i + b_u) %>%
+    pull(y_hat)
+  
+rmse <- sqrt(mean((y_hat - validation$rating)^2))
+
+```
+
+
+```{r tab8, echo = FALSE}
+# Final result table on validation set
+result_final <- data_frame(Method = "Genre + year + movieId + userId effect model",
+                           RMSE = rmse)
+
+kbl(result_final, booktabs = T, caption ="Final RMSE result on validation set") %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+The final RMSE result on the validation set is not much different from the result on the test set and much less than 1 (i.e., the standard error of rating), which we can suppose that it gives a good prediction for rating of a certain movie. Hence, based on that, the movie recommendation system works effectively.
+\FloatBarrier
+
+# Conclusion
+
+Analysing the movieLens data set gave many interesting insights into the movie business. By exploration and visualization, we can find out more trends in the movie data set. In this project, I just use a simple linear regression to predict rating and only few variables are included into model. I think that we can extend to more complicated models with more variables which are available in the full data set, which will help to produce a better prediction for a movie rating.
